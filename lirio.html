@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pointillism Lily</title>
+<style>
+  html, body {
+    margin: 0; height: 100%; background: #04020a; overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #e9d9ef;
+  }
+  .stage {
+    height: 100dvh; display: flex; align-items: center; justify-content: center;
+  }
+  canvas {
+    display: block;
+    height: min(100dvh, calc(100vw * 16 / 9));
+    aspect-ratio: 9 / 16;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .bar {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    display: flex; gap: 8px; align-items: center;
+    background: rgba(20, 10, 30, .55); backdrop-filter: blur(8px);
+    border: 1px solid rgba(255, 190, 225, .18); border-radius: 999px;
+    padding: 6px 8px; opacity: .35; transition: opacity .25s;
+  }
+  .bar:hover, .bar:focus-within { opacity: 1; }
+  .bar button {
+    background: transparent; color: inherit; border: 0; border-radius: 999px;
+    padding: 7px 14px; font: inherit; font-size: 14px; cursor: pointer;
+  }
+  .bar button:hover { background: rgba(255, 190, 225, .14); }
+  .bar .hint { font-size: 12px; opacity: .6; padding: 0 8px 0 4px; }
+  @media (hover: none) { .bar { opacity: .8; } .bar .hint { display: none; } }
+</style>
+</head>
+<body>
+<div class="stage"><canvas id="c" width="720" height="1280"></canvas></div>
+<div class="bar">
+  <button id="bPause">Pausa</button>
+  <button id="bReset">Reiniciar</button>
+  <span class="hint">Espacio · R</span>
+</div>
+
+<script>
+"use strict";
+// ---------- Constantes (igual que en Python) ----------
+const W = 720, H = 1280;
+const T_STEM = 4.0, T_B0 = 5.0, T_B1 = 15.0, LOOP_AT = 0;
+const BG = [4, 2, 10];
+const S = W / 720.0;
+const gx = W / 2, gy = H * 0.82;
+const HS = 380 * S;
+
+// ---------- Aleatorio con semilla (equivalente a default_rng(11)) ----------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(11);
+let spare = null;
+function randn() {
+  if (spare !== null) { const s = spare; spare = null; return s; }
+  let u = 0; while (u === 0) u = rand();
+  const v = rand(), m = Math.sqrt(-2 * Math.log(u));
+  spare = m * Math.sin(2 * Math.PI * v);
+  return m * Math.cos(2 * Math.PI * v);
+}
+const uni = (a, b) => a + (b - a) * rand();
+const clip01 = x => (x < 0 ? 0 : x > 1 ? 1 : x);
+const smooth = x => { x = clip01(x); return x * x * (3 - 2 * x); };
+const lerp = (a, b, t) => a + (b - a) * t;
+const rad = d => d * Math.PI / 180;
+
+// ---------- Nervadura central (midrib) ----------
+const K = 40;
+const MR = new Float64Array(K + 1), MH = new Float64Array(K + 1);
+function midrib(L, a0, curl) {
+  const ds = L / K; let rs = 0, hs = 0;
+  MR[0] = 0; MH[0] = 0;
+  for (let i = 1; i <= K; i++) {
+    const al = a0 + curl * Math.pow(i / K, 1.6);
+    rs += Math.sin(al) * ds; hs += Math.cos(al) * ds;
+    MR[i] = rs; MH[i] = hs;
+  }
+}
+function interp(u, arr) {
+  const f = u * K; const i = Math.floor(f);
+  if (i >= K) return arr[K];
+  if (i < 0) return arr[0];
+  return arr[i] + (arr[i + 1] - arr[i]) * (f - i);
+}
+
+// ---------- Pétalos ----------
+const NP = 2300;
+const STOPS = [0, .35, .7, 1];
+function interpStops(x, ys) {
+  for (let i = 0; i < 3; i++) {
+    if (x <= STOPS[i + 1]) return ys[i] + (ys[i + 1] - ys[i]) * (x - STOPS[i]) / (STOPS[i + 1] - STOPS[i]);
+  }
+  return ys[3];
+}
+const petals = [];
+for (let k = 0; k < 6; k++) {
+  const outer = k % 2 === 0;
+  const pu = new Float64Array(NP), pv = new Float64Array(NP), prof = new Float64Array(NP);
+  const base = new Float64Array(NP * 3);
+  for (let i = 0; i < NP; i++) pu[i] = Math.pow(rand(), 0.85);
+  for (let i = 0; i < NP; i++) pv[i] = uni(-1, 1);
+  for (let i = 0; i < NP; i++) {
+    prof[i] = Math.pow(Math.sin(Math.PI * Math.pow(pu[i], 0.7)), 0.9);
+    base[i * 3]     = interpStops(pu[i], [205, 255, 255, 255]);
+    base[i * 3 + 1] = interpStops(pu[i], [40, 95, 150, 195]);
+    base[i * 3 + 2] = interpStops(pu[i], [125, 165, 205, 228]);
+  }
+  for (let i = 0; i < NP; i++) {
+    const mid = Math.abs(pv[i]) < 0.07 && pu[i] < 0.55;
+    if (mid) { base[i * 3] = 235; base[i * 3 + 1] = 225; base[i * 3 + 2] = 150; }
+    const spot = rand() < 0.10 && pu[i] < 0.6 && Math.abs(pv[i]) < 0.75 && !mid;
+    if (spot) { base[i * 3] = 140; base[i * 3 + 1] = 15; base[i * 3 + 2] = 80; }
+    if (Math.abs(pv[i]) > 0.88) { base[i * 3] *= 1.08; base[i * 3 + 1] *= 1.08; base[i * 3 + 2] *= 1.08; }
+  }
+  for (let i = 0; i < NP; i++) {
+    const m = 0.82 + 0.35 * rand();
+    base[i * 3] *= m; base[i * 3 + 1] *= m; base[i * 3 + 2] *= m;
+  }
+  petals.push({
+    phi: rad(k * 60 + 8), L: (outer ? 300 : 280) * S,
+    Wm: (outer ? 64 : 72) * S, ac: outer ? 0.10 : 0.05,
+    ao: outer ? 1.05 : 0.82, curl: outer ? 0.95 : 0.75,
+    pu, pv, prof, base
+  });
+}
+
+// ---------- Tallo ----------
+const NS = 3200;
+const st_s = new Float64Array(NS), st_dx = new Float64Array(NS), st_col = new Float64Array(NS * 3);
+for (let i = 0; i < NS; i++) st_s[i] = rand();
+for (let i = 0; i < NS; i++) st_dx[i] = randn() * (3.2 * S) * (1 - 0.5 * st_s[i]);
+for (let i = 0; i < NS; i++) {
+  const s = st_s[i], m = 0.8 + 0.4 * rand();
+  st_col[i * 3] = lerp(40, 120, s) * m;
+  st_col[i * 3 + 1] = lerp(150, 215, s) * m;
+  st_col[i * 3 + 2] = lerp(95, 120, s) * m;
+}
+
+// ---------- Hojas ----------
+const leaves = [];
+for (const [s0, Lf, side] of [[0.10, 190, 1], [0.24, 175, -1], [0.40, 150, 1], [0.56, 120, -1]]) {
+  const n = 900;
+  const u = new Float64Array(n), v = new Float64Array(n), prof = new Float64Array(n), col = new Float64Array(n * 3);
+  for (let i = 0; i < n; i++) u[i] = Math.pow(rand(), 0.9);
+  for (let i = 0; i < n; i++) v[i] = uni(-1, 1);
+  for (let i = 0; i < n; i++) {
+    prof[i] = Math.pow(Math.sin(Math.PI * Math.pow(u[i], 0.8)), 0.8);
+    let r = lerp(40, 140, u[i]), g = lerp(160, 235, u[i]), b = lerp(100, 140, u[i]);
+    if (Math.abs(v[i]) < 0.08) { r = 190; g = 240; b = 170; }
+    const m = 0.8 + 0.4 * rand();
+    col[i * 3] = r * m; col[i * 3 + 1] = g * m; col[i * 3 + 2] = b * m;
+  }
+  leaves.push({ s0, L: Lf * S, side, u, v, prof, col, n });
+}
+
+// ---------- Tierra ----------
+const NG = 5000;
+const so_dx = new Float64Array(NG), so_y = new Float64Array(NG), so_col = new Float64Array(NG * 3);
+for (let i = 0; i < NG; i++) so_dx[i] = uni(-340, 340) * S;
+for (let i = 0; i < NG; i++) {
+  const mound = (1 - Math.pow(so_dx[i] / (340 * S), 2)) * 55 * S;
+  so_y[i] = gy - mound * Math.sqrt(rand()) + randn() * 1.5;
+}
+for (let i = 0; i < NG; i++) so_col[i * 3] = lerp(70, 140, rand()) * 0.8;
+for (let i = 0; i < NG; i++) so_col[i * 3 + 1] = lerp(55, 100, rand()) * 0.8;
+for (let i = 0; i < NG; i++) so_col[i * 3 + 2] = lerp(80, 120, rand()) * 0.8;
+
+// ---------- Puntos flotantes ----------
+const ND = 450;
+const d_x = [], d_y = [], d_sp = [], d_ph = [], d_f = [];
+for (let i = 0; i < ND; i++) d_x.push(rand() * W);
+for (let i = 0; i < ND; i++) d_y.push(rand() * H);
+for (let i = 0; i < ND; i++) d_sp.push(uni(6, 22) * S);
+for (let i = 0; i < ND; i++) d_ph.push(rand() * 6.28);
+for (let i = 0; i < ND; i++) d_f.push(uni(1, 4));
+
+// ---------- Mandala ----------
+const ang_ring = Array.from({ length: 1100 }, () => rand() * 6.28);
+const ang_c = Array.from({ length: 6 }, () => Array.from({ length: 260 }, () => rand() * 6.28));
+
+// ---------- Polen ----------
+const NF = 140;
+const f_off = [], f_ph = [], f_dr = [], f_sp = [];
+for (let i = 0; i < NF; i++) f_off.push(rand());
+for (let i = 0; i < NF; i++) f_ph.push(rand() * 6.28);
+for (let i = 0; i < NF; i++) f_dr.push(uni(-80, 80) * S);
+for (let i = 0; i < NF; i++) f_sp.push(uni(0.05, 0.12));
+
+// ---------- Estambres ----------
+const stam = [];
+for (let k = 0; k < 6; k++) {
+  const an = [];
+  for (let i = 0; i < 35; i++) an.push([randn(), randn()]);
+  stam.push({ phi: rad(k * 60 + 38), an });
+}
+
+const stem_x = (s, t) => gx + 30 * S * Math.sin(2.2 * s) + 10 * S * Math.sin(0.9 * t) * s * s;
+const stem_y = s => gy - s * HS;
+
+// ---------- Búfer de puntos ----------
+const MAXP = 40000;
+const PX = new Float32Array(MAXP), PY = new Float32Array(MAXP), PZ = new Float32Array(MAXP);
+const PR = new Float32Array(MAXP), PG = new Float32Array(MAXP), PB = new Float32Array(MAXP);
+const IDX = new Uint32Array(MAXP);
+let n = 0;
+function add(x, y, z, r, g, b) {
+  PX[n] = x; PY[n] = y; PZ[n] = z; PR[n] = r; PG[n] = g; PB[n] = b; n++;
+}
+
+function render(t, px) {
+  n = 0;
+  const g = smooth(t / T_STEM);
+  const e = smooth((t - T_B0) / (T_B1 - T_B0));
+  const rev = smooth((t - T_STEM + 0.3) / 1.6);
+  const hx = stem_x(1.0, t), hy = stem_y(1.0);
+
+  // Puntos de fondo que suben y parpadean
+  for (let i = 0; i < ND; i++) {
+    const tw = (0.35 + 0.65 * (Math.sin(t * d_f[i] + d_ph[i]) > 0.2 ? 1 : 0)) * 0.55;
+    let yy = (d_y[i] - t * d_sp[i]) % H; if (yy < 0) yy += H;
+    add(d_x[i], yy, -1000, 255 * tw, 200 * tw, 235 * tw);
+  }
+
+  // Mandala giratorio
+  const ha = smooth((t - T_B0 + 1.5) / 4.0) * 0.9;
+  if (ha > 0.01) {
+    const cx0 = hx, cy0 = hy - 90 * S, R = 300 * S, rot = t * 0.12;
+    const k1 = ha * 0.7;
+    for (const a0 of ang_ring) {
+      const a = a0 + rot;
+      add(cx0 + R * Math.cos(a), cy0 + R * Math.sin(a), -900, 255 * k1, 190 * k1, 225 * k1);
+    }
+    const k2 = ha * 0.45;
+    for (let k = 0; k < 6; k++) {
+      const ca = rot * 1.3 + k * Math.PI / 3;
+      const ox = cx0 + R * Math.cos(ca), oy = cy0 + R * Math.sin(ca);
+      for (const a0 of ang_c[k]) {
+        const a = a0 + rot;
+        add(ox + R * 0.5 * Math.cos(a), oy + R * 0.5 * Math.sin(a), -900, 255 * k2, 170 * k2, 215 * k2);
+      }
+    }
+  }
+
+  // Tierra
+  for (let i = 0; i < NG; i++) add(so_dx[i] + gx, so_y[i], -500, so_col[i * 3], so_col[i * 3 + 1], so_col[i * 3 + 2]);
+
+  // Tallo
+  for (let i = 0; i < NS; i++) {
+    const s = st_s[i];
+    if (s <= g) add(stem_x(s, t) + st_dx[i], stem_y(s), -100, st_col[i * 3], st_col[i * 3 + 1], st_col[i * 3 + 2]);
+  }
+
+  // Hojas
+  for (const lf of leaves) {
+    const lg = clip01((g - lf.s0) * 2.5);
+    if (lg <= 0.01) continue;
+    midrib(lf.L * lg, 0.85, 1.1);
+    const bx = stem_x(lf.s0, t), by = stem_y(lf.s0);
+    const sway = Math.sin(t * 1.2 + lf.s0 * 5) * 0.03;
+    for (let i = 0; i < lf.n; i++) {
+      const u = lf.u[i], v = lf.v[i];
+      const rr = interp(u, MR), hh = interp(u, MH);
+      const wid = 15 * S * lf.prof[i] * lg;
+      const x = bx + lf.side * (rr + v * wid * 0.35) + sway * hh * lf.side;
+      const y = by - hh + v * wid;
+      add(x, y, -90, lf.col[i * 3], lf.col[i * 3 + 1], lf.col[i * 3 + 2]);
+    }
+  }
+
+  // Flor
+  if (rev > 0.01) {
+    const psi = 0.25 + t * 0.22, tau = 0.5;
+    const cp = Math.cos(psi), sp = Math.sin(psi);
+    const ct = Math.cos(tau), st = Math.sin(tau);
+    const sway_t = Math.sin(t * 0.8) * 0.02;
+
+    for (const p of petals) {
+      const Ls = p.L * (0.45 + 0.55 * e) * (0.35 + 0.65 * rev);
+      midrib(Ls, lerp(p.ac, p.ao, e), (0.12 + 0.88 * e) * p.curl);
+      const wbase = p.Wm * (0.55 + 0.45 * e) * (0.35 + 0.65 * rev);
+      const cph = Math.cos(p.phi), sph = Math.sin(p.phi);
+      const yk = 0.30 * (1 - e) - 0.25 * e;
+      for (let i = 0; i < NP; i++) {
+        const u = p.pu[i];
+        if (u > rev) continue;
+        const v = p.pv[i];
+        const rr = interp(u, MR), hh = interp(u, MH);
+        const wid = wbase * p.prof[i];
+        const X = rr * cph - v * wid * sph;
+        const Z = rr * sph + v * wid * cph;
+        const Y = hh + v * v * wid * yk;
+        const Xp = X * cp + Z * sp;
+        const Zp = -X * sp + Z * cp;
+        const sy = Y * ct - Zp * st;
+        const shade = 0.55 + 0.45 * clip01(Zp / p.L * 0.8 + 0.5);
+        const tint = (1 - e) * clip01(u * 1.3) * 0.6;
+        const r = (p.base[i * 3] * (1 - tint) + 135 * tint) * shade;
+        const gg = (p.base[i * 3 + 1] * (1 - tint) + 205 * tint) * shade;
+        const b = (p.base[i * 3 + 2] * (1 - tint) + 125 * tint) * shade;
+        add(hx + Xp + sway_t * sy, hy - sy, Zp, r, gg, b);
+      }
+    }
+
+    // Estambres y anteras
+    if (e > 0.28) {
+      const sr = smooth((e - 0.28) / 0.4);
+      for (const sd of stam) {
+        const Ls = 215 * S * (0.4 + 0.6 * e) * sr;
+        midrib(Ls, lerp(0.15, 0.62, e), 0.55 * e);
+        const cph = Math.cos(sd.phi), sph = Math.sin(sd.phi);
+        for (let i = 0; i < 45; i++) {
+          const u = rand();
+          const rr = interp(u, MR), hh = interp(u, MH);
+          const X = rr * cph, Z = rr * sph, Y = hh;
+          const Xp = X * cp + Z * sp, Zp = -X * sp + Z * cp;
+          const sy = Y * ct - Zp * st;
+          add(hx + Xp, hy - sy, Zp + 5, 245, 235, 200);
+        }
+        const tx = MR[K] * cph, tz = MR[K] * sph, ty = MH[K];
+        const txp = tx * cp + tz * sp, tzp = -tx * sp + tz * cp;
+        const tsy = ty * ct - tzp * st;
+        for (let i = 0; i < 35; i++) {
+          const m = 0.8 + 0.4 * rand();
+          add(hx + txp + sd.an[i][0] * 5 * S * 1.6, hy - tsy + sd.an[i][1] * 5 * S * 0.7, tzp + 6, 255 * m, 150 * m, 40 * m);
+        }
+      }
+    }
+  }
+
+  // Polen que cae
+  if (e > 0.6) {
+    const fa = smooth((e - 0.6) / 0.4);
+    for (let i = 0; i < NF; i++) {
+      const q = (t * f_sp[i] + f_off[i]) % 1.0;
+      const fx = hx + f_dr[i] * q + Math.sin(q * 7 + f_ph[i]) * 25 * S;
+      const fy = (hy - 110 * S) + q * (gy - hy + 90 * S);
+      const fade = (1 - q) * fa;
+      if (f_ph[i] > 3.1) add(fx, fy, 300, 255 * fade, 190 * fade, 80 * fade);
+      else add(fx, fy, 300, 255 * fade, 150 * fade, 205 * fade);
+    }
+  }
+
+  // Ordenar por profundidad (lo de atrás primero) y pintar
+  const idx = IDX.subarray(0, n);
+  for (let i = 0; i < n; i++) idx[i] = i;
+  idx.sort((a, b) => (PZ[a] - PZ[b]) || (a - b));
+
+  px.fill(BGPACK);
+  for (let j = 0; j < n; j++) {
+    const i = idx[j];
+    const ix = PX[i] | 0, iy = PY[i] | 0;
+    if (ix < 0 || ix >= W - 2 || iy < 0 || iy >= H - 2) continue;
+    const c = pack(PR[i], PG[i], PB[i]);
+    const o = iy * W + ix;
+    px[o] = c; px[o + 1] = c; px[o + W] = c;
+  }
+}
+
+const c255 = v => (v <= 0 ? 0 : v >= 255 ? 255 : v | 0);
+function pack(r, g, b) { return ((255 << 24) | (c255(b) << 16) | (c255(g) << 8) | c255(r)) >>> 0; }
+const BGPACK = pack(BG[0], BG[1], BG[2]);
+
+// ---------- Canvas, brillo y bucle ----------
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+const img = ctx.createImageData(W, H);
+const px = new Uint32Array(img.data.buffer);
+
+const small = document.createElement("canvas");
+small.width = W / 10; small.height = H / 10;
+const sctx = small.getContext("2d");
+sctx.imageSmoothingEnabled = true; sctx.imageSmoothingQuality = "high";
+
+function glow() {
+  sctx.clearRect(0, 0, small.width, small.height);
+  sctx.drawImage(canvas, 0, 0, small.width, small.height);
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+  ctx.globalCompositeOperation = "lighter";
+  ctx.drawImage(small, 0, 0, W, H);
+  ctx.globalCompositeOperation = "source-over";
+}
+
+let t = 0, paused = false, last = performance.now();
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  if (!paused) {
+    t += dt;
+    if (LOOP_AT && t > LOOP_AT) t = 0;
+  }
+  render(t, px);
+  ctx.putImageData(img, 0, 0);
+  glow();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------- Controles ----------
+const bPause = document.getElementById("bPause");
+function togglePause() { paused = !paused; bPause.textContent = paused ? "Seguir" : "Pausa"; }
+function reset() { t = 0; }
+bPause.addEventListener("click", togglePause);
+document.getElementById("bReset").addEventListener("click", reset);
+canvas.addEventListener("click", togglePause);
+window.addEventListener("keydown", ev => {
+  if (ev.code === "Space") { ev.preventDefault(); togglePause(); }
+  else if (ev.key === "r" || ev.key === "R") reset();
+});
+</script>
+</body>
+</html>
